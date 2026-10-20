@@ -1,0 +1,149 @@
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { canAccessSession } from "@/lib/api-auth";
+import { getAuthenticatedUserForAction } from "@/lib/server-action-auth";
+import { parseReplyTiming, type ReplyTiming } from "@/lib/reply-timing";
+import { Prisma } from "@prisma/client";
+
+// Fetch rules directly from DB without API call
+export async function getAutoReplies(sessionId: string) {
+    const nextAuthSession = await getAuthenticatedUserForAction();
+    if (!nextAuthSession) {
+        throw new Error("Não autorizado");
+    }
+
+    const canAccess = await canAccessSession(nextAuthSession.id, nextAuthSession.role, sessionId);
+    if (!canAccess) {
+        throw new Error("Forbidden");
+    }
+
+    const session = await prisma.session.findUnique({
+        where: { sessionId: sessionId },
+        select: { id: true }
+    });
+
+    if (!session) {
+        throw new Error("Sessão não encontrada");
+    }
+
+    const rules = await prisma.autoReply.findMany({
+        where: { sessionId: session.id },
+        orderBy: { createdAt: 'desc' }
+    });
+
+    return rules;
+}
+
+// Create a new auto reply directly to DB
+export async function createAutoReply(sessionId: string, data: { keyword: string; response?: string; matchType: string; isMedia: boolean; mediaUrl?: string | null; mediaType?: string | null; triggerType: string } & Partial<ReplyTiming>) {
+    const nextAuthSession = await getAuthenticatedUserForAction();
+    if (!nextAuthSession) {
+        throw new Error("Não autorizado");
+    }
+
+    if (!data.keyword || (!data.response && !data.mediaUrl)) {
+        throw new Error("Informe uma palavra-chave e uma resposta ou mídia");
+    }
+
+    const canAccess = await canAccessSession(nextAuthSession.id, nextAuthSession.role, sessionId);
+    if (!canAccess) {
+        throw new Error("Forbidden");
+    }
+
+    const session = await prisma.session.findUnique({
+        where: { sessionId: sessionId },
+        select: { id: true }
+    });
+
+    if (!session) {
+        throw new Error("Sessão não encontrada");
+    }
+
+    const createData: Prisma.AutoReplyUncheckedCreateInput = {
+        ...parseReplyTiming(data),
+        sessionId: session.id,
+        keyword: data.keyword,
+        response: data.response || null,
+        matchType: data.matchType || "EXACT",
+        isMedia: !!data.mediaUrl,
+        mediaUrl: data.mediaUrl || null,
+        mediaType: data.mediaType || null,
+        // @ts-ignore
+        triggerType: data.triggerType || "ALL"
+    };
+
+    const newRule = await prisma.autoReply.create({
+        data: createData
+    });
+
+    return newRule;
+}
+
+export async function deleteAutoReply(sessionId: string, ruleId: string) {
+    const nextAuthSession = await getAuthenticatedUserForAction();
+    if (!nextAuthSession) {
+        throw new Error("Não autorizado");
+    }
+
+    const rule = await prisma.autoReply.findUnique({
+        where: { id: ruleId },
+        include: { session: true }
+    });
+
+    if (!rule) {
+        throw new Error("Regra não encontrada");
+    }
+
+    const canAccess = await canAccessSession(nextAuthSession.id, nextAuthSession.role, rule.session.sessionId);
+    if (!canAccess || rule.session.sessionId !== sessionId) {
+        throw new Error("Forbidden");
+    }
+
+    await prisma.autoReply.delete({ where: { id: ruleId } });
+    return { success: true };
+}
+
+export async function updateAutoReply(sessionId: string, ruleId: string, data: { keyword: string; response?: string; matchType: string; isMedia: boolean; mediaUrl?: string | null; mediaType?: string | null; triggerType: string } & Partial<ReplyTiming>) {
+    const nextAuthSession = await getAuthenticatedUserForAction();
+    if (!nextAuthSession) {
+        throw new Error("Não autorizado");
+    }
+
+    if (!data.keyword || (!data.response && !data.mediaUrl)) {
+        throw new Error("Informe uma palavra-chave e uma resposta ou mídia");
+    }
+
+    const rule = await prisma.autoReply.findUnique({
+        where: { id: ruleId },
+        include: { session: true }
+    });
+
+    if (!rule) {
+        throw new Error("Regra não encontrada");
+    }
+
+    const canAccess = await canAccessSession(nextAuthSession.id, nextAuthSession.role, rule.session.sessionId);
+    if (!canAccess || rule.session.sessionId !== sessionId) {
+        throw new Error("Forbidden");
+    }
+
+    const updateData: Prisma.AutoReplyUncheckedUpdateInput = {
+        ...parseReplyTiming(data, rule),
+        keyword: data.keyword,
+        response: data.response || null,
+        matchType: data.matchType || "EXACT",
+        isMedia: !!data.mediaUrl,
+        mediaUrl: data.mediaUrl || null,
+        mediaType: data.mediaType || null,
+        // @ts-ignore
+        triggerType: data.triggerType || "ALL"
+    };
+
+    const updatedRule = await prisma.autoReply.update({
+        where: { id: ruleId },
+        data: updateData
+    });
+
+    return updatedRule;
+}
